@@ -1,8 +1,4 @@
-cd /workspaces/point-cloud-viewer
-
-git add .github/workflows/build-windows.yml CMakeLists.txt
-git commit -m "ci: add GitHub Actions workflow to build Windows exe"
-git push origin mastername: Build Windows EXE
+name: Build Windows EXE
 
 on:
   push:
