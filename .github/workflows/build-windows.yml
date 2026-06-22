@@ -7,7 +7,11 @@ on:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
+
+    env:
+      PCL_VERSION: '1.13.1'
+      PCL_ROOT: C:\PCL
 
     steps:
       - name: Checkout
@@ -30,14 +34,24 @@ jobs:
           arch: x64
 
       # ── 3. 下载并安装 PCL 预编译包（含 VTK、Boost、Eigen3、FLANN）─────────
+      - name: Cache PCL
+        id: cache-pcl
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PCL_ROOT }}
+          key: pcl-${{ env.PCL_VERSION }}-msvc2022-win64
+
       - name: Install PCL (prebuilt AllInOne)
+        if: steps.cache-pcl.outputs.cache-hit != 'true'
+        timeout-minutes: 25
         shell: pwsh
         run: |
-          $pcl_ver = "1.13.1"
+          $pcl_ver = "${{ env.PCL_VERSION }}"
+          $pclRoot = "${{ env.PCL_ROOT }}"
           $url = "https://github.com/PointCloudLibrary/pcl/releases/download/pcl-$pcl_ver/PCL-$pcl_ver-AllInOne-msvc2022-win64.exe"
           $out = "$env:TEMP\PCL-AllInOne.exe"
           Write-Host "Downloading PCL $pcl_ver AllInOne installer from:`n  $url"
-          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -MaximumRetryCount 3 -RetryIntervalSec 10
           # 校验是否为有效 PE 可执行文件（防止下载到 404 页面）
           $magic = [System.IO.File]::ReadAllBytes($out)[0..1]
           if ($magic[0] -ne 0x4D -or $magic[1] -ne 0x5A) {
@@ -45,20 +59,37 @@ jobs:
             exit 1
           }
           Write-Host "File size: $([math]::Round((Get-Item $out).Length/1MB,1)) MB"
-          Write-Host "Installing PCL silently..."
-          $proc = Start-Process -FilePath $out -ArgumentList "/S" -PassThru
-          if (-not $proc.WaitForExit(300000)) {   # 5 分钟超时
+          Write-Host "Installing PCL silently to $pclRoot..."
+          $proc = Start-Process -FilePath $out -ArgumentList @("/S", "/D=$pclRoot") -PassThru
+          if (-not $proc.WaitForExit(1200000)) {   # 20 分钟超时
             $proc.Kill()
-            Write-Error "PCL installer timed out after 5 minutes."
+            Write-Error "PCL installer timed out after 20 minutes."
             exit 1
           }
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "PCL installer failed with exit code $($proc.ExitCode)."
+            exit $proc.ExitCode
+          }
           Write-Host "PCL installation done (exit code: $($proc.ExitCode))."
+
+      - name: Verify PCL install
+        shell: pwsh
+        run: |
+          $pclRoot = "${{ env.PCL_ROOT }}"
+          $pclConfig = Join-Path $pclRoot "cmake\PCLConfig.cmake"
+          if (-not (Test-Path $pclConfig)) {
+            Write-Error "PCLConfig.cmake was not found at $pclConfig"
+            Get-ChildItem $pclRoot -Recurse -Depth 3 | Select-Object FullName
+            exit 1
+          }
+          Write-Host "PCL root : $pclRoot"
+          Write-Host "PCL config: $pclConfig"
 
       # ── 4. 配置 CMake ─────────────────────────────────────────────────────
       - name: Configure CMake
         shell: pwsh
         run: |
-          $pclRoot = "C:\Program Files\PCL 1.13.1"
+          $pclRoot = "${{ env.PCL_ROOT }}"
           $vtkDir  = (Get-ChildItem "$pclRoot\3rdParty\VTK\lib\cmake" -Directory | Select-Object -First 1).FullName
           Write-Host "PCL root : $pclRoot"
           Write-Host "VTK dir  : $vtkDir"
@@ -85,7 +116,7 @@ jobs:
       - name: Copy PCL runtime DLLs
         shell: pwsh
         run: |
-          $pclRoot = "C:\Program Files\PCL 1.13.1"
+          $pclRoot = "${{ env.PCL_ROOT }}"
           # PCL 自身 DLL
           Get-ChildItem "$pclRoot\bin\*.dll" | Copy-Item -Destination build\package\ -Force
           # VTK DLL
