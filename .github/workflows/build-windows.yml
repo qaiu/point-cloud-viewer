@@ -33,19 +33,32 @@ jobs:
       - name: Install PCL (prebuilt AllInOne)
         shell: pwsh
         run: |
-          $url = "https://github.com/PointCloudLibrary/pcl/releases/download/pcl-1.14.1/PCL-1.14.1-AllInOne-msvc2022-win64.exe"
+          $pcl_ver = "1.13.1"
+          $url = "https://github.com/PointCloudLibrary/pcl/releases/download/pcl-$pcl_ver/PCL-$pcl_ver-AllInOne-msvc2022-win64.exe"
           $out = "$env:TEMP\PCL-AllInOne.exe"
-          Write-Host "Downloading PCL AllInOne installer..."
+          Write-Host "Downloading PCL $pcl_ver AllInOne installer from:`n  $url"
           Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          # 校验是否为有效 PE 可执行文件（防止下载到 404 页面）
+          $magic = [System.IO.File]::ReadAllBytes($out)[0..1]
+          if ($magic[0] -ne 0x4D -or $magic[1] -ne 0x5A) {
+            Write-Error "Downloaded file is not a valid EXE (got 404 or redirect). Check URL."
+            exit 1
+          }
+          Write-Host "File size: $([math]::Round((Get-Item $out).Length/1MB,1)) MB"
           Write-Host "Installing PCL silently..."
-          Start-Process -FilePath $out -ArgumentList "/S" -Wait -NoNewWindow
-          Write-Host "PCL installation done."
+          $proc = Start-Process -FilePath $out -ArgumentList "/S" -PassThru
+          if (-not $proc.WaitForExit(300000)) {   # 5 分钟超时
+            $proc.Kill()
+            Write-Error "PCL installer timed out after 5 minutes."
+            exit 1
+          }
+          Write-Host "PCL installation done (exit code: $($proc.ExitCode))."
 
       # ── 4. 配置 CMake ─────────────────────────────────────────────────────
       - name: Configure CMake
         shell: pwsh
         run: |
-          $pclRoot = "C:\Program Files\PCL 1.14.1"
+          $pclRoot = "C:\Program Files\PCL 1.13.1"
           $vtkDir  = (Get-ChildItem "$pclRoot\3rdParty\VTK\lib\cmake" -Directory | Select-Object -First 1).FullName
           Write-Host "PCL root : $pclRoot"
           Write-Host "VTK dir  : $vtkDir"
@@ -72,7 +85,7 @@ jobs:
       - name: Copy PCL runtime DLLs
         shell: pwsh
         run: |
-          $pclRoot = "C:\Program Files\PCL 1.14.1"
+          $pclRoot = "C:\Program Files\PCL 1.13.1"
           # PCL 自身 DLL
           Get-ChildItem "$pclRoot\bin\*.dll" | Copy-Item -Destination build\package\ -Force
           # VTK DLL
