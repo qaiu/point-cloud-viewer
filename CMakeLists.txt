@@ -14,7 +14,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package (VTK REQUIRED)
 IF (VTK_FOUND)
     MESSAGE(STATUS "VTK found.")
-    INCLUDE(${VTK_USE_FILE})
+    # VTK_USE_FILE 在 VTK 9.x 中已移除，兼容新旧版本
+    IF (DEFINED VTK_USE_FILE)
+        INCLUDE(${VTK_USE_FILE})
+    ENDIF()
 ENDIF()
 
 find_package (PCL 1.7.0 REQUIRED)
@@ -57,7 +60,7 @@ else()
 #    set(ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android")
     else()
         add_executable(PointCloudViewer
-           # 是否打开控制台
+           # Windows 下隐藏控制台窗口（去掉注释即可启用）
            # WIN32
             ${PROJECT_SOURCES}
         )
