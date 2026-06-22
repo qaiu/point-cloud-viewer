@@ -50,6 +50,7 @@ jobs:
           $pclRoot = "${{ env.PCL_ROOT }}"
           $url = "https://github.com/PointCloudLibrary/pcl/releases/download/pcl-$pcl_ver/PCL-$pcl_ver-AllInOne-msvc2022-win64.exe"
           $out = "$env:TEMP\PCL-AllInOne.exe"
+          $extractRoot = "$env:TEMP\PCL-AllInOne"
           Write-Host "Downloading PCL $pcl_ver AllInOne installer from:`n  $url"
           Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -MaximumRetryCount 3 -RetryIntervalSec 10
           # 校验是否为有效 PE 可执行文件（防止下载到 404 页面）
@@ -59,18 +60,29 @@ jobs:
             exit 1
           }
           Write-Host "File size: $([math]::Round((Get-Item $out).Length/1MB,1)) MB"
-          Write-Host "Installing PCL silently to $pclRoot..."
-          $proc = Start-Process -FilePath $out -ArgumentList @("/S", "/D=$pclRoot") -PassThru
-          if (-not $proc.WaitForExit(1200000)) {   # 20 分钟超时
-            $proc.Kill()
-            Write-Error "PCL installer timed out after 20 minutes."
+          Remove-Item $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item $pclRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $extractRoot, $pclRoot | Out-Null
+          $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+          if (-not $sevenZip) {
+            Write-Error "7z was not found on PATH."
             exit 1
           }
-          if ($proc.ExitCode -ne 0) {
-            Write-Error "PCL installer failed with exit code $($proc.ExitCode)."
-            exit $proc.ExitCode
+          Write-Host "Extracting PCL package to $extractRoot using $sevenZip..."
+          & $sevenZip x $out "-o$extractRoot" -y
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "7z extraction failed with exit code $LASTEXITCODE."
+            exit $LASTEXITCODE
           }
-          Write-Host "PCL installation done (exit code: $($proc.ExitCode))."
+          $pclConfig = Get-ChildItem $extractRoot -Recurse -Filter PCLConfig.cmake | Select-Object -First 1
+          if (-not $pclConfig) {
+            Write-Error "PCLConfig.cmake was not found in the extracted installer payload."
+            Get-ChildItem $extractRoot -Recurse -Depth 3 | Select-Object FullName
+            exit 1
+          }
+          $pclSourceRoot = Split-Path (Split-Path $pclConfig.FullName -Parent) -Parent
+          Get-ChildItem $pclSourceRoot -Force | Copy-Item -Destination $pclRoot -Recurse -Force
+          Write-Host "PCL files copied to $pclRoot"
 
       - name: Verify PCL install
         shell: pwsh
