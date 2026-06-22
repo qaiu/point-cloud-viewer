@@ -29,54 +29,60 @@ jobs:
         with:
           arch: x64
 
-      # ── 3. 恢复 vcpkg 缓存（PCL + VTK 编译耗时较长，缓存很重要）──────────
-      - name: Cache vcpkg
-        uses: actions/cache@v4
-        with:
-          path: |
-            C:/vcpkg/installed
-            C:/vcpkg/packages
-            C:/vcpkg/buildtrees
-          key: vcpkg-pcl-${{ runner.os }}-x64-windows-${{ hashFiles('**/CMakeLists.txt') }}
-          restore-keys: |
-            vcpkg-pcl-${{ runner.os }}-x64-windows-
-
-      # ── 4. 安装 PCL（包含 VTK、Eigen3、Boost、FLANN 等依赖）────────────
-      - name: Install PCL via vcpkg
+      # ── 3. 下载并安装 PCL 预编译包（含 VTK、Boost、Eigen3、FLANN）─────────
+      - name: Install PCL (prebuilt AllInOne)
+        shell: pwsh
         run: |
-          cd C:\vcpkg
-          git pull
-          .\bootstrap-vcpkg.bat -disableMetrics
-          .\vcpkg install pcl:x64-windows --recurse
-          .\vcpkg integrate install
+          $url = "https://github.com/PointCloudLibrary/pcl/releases/download/pcl-1.14.1/PCL-1.14.1-AllInOne-msvc2022-win64.exe"
+          $out = "$env:TEMP\PCL-AllInOne.exe"
+          Write-Host "Downloading PCL AllInOne installer..."
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          Write-Host "Installing PCL silently..."
+          Start-Process -FilePath $out -ArgumentList "/S" -Wait -NoNewWindow
+          Write-Host "PCL installation done."
 
-      # ── 5. 配置 CMake ─────────────────────────────────────────────────────
+      # ── 4. 配置 CMake ─────────────────────────────────────────────────────
       - name: Configure CMake
+        shell: pwsh
         run: |
-          cmake -B build ^
-            -G "Visual Studio 17 2022" -A x64 ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake ^
-            -DVCPKG_TARGET_TRIPLET=x64-windows ^
-            -DCMAKE_PREFIX_PATH="${{ env.Qt5_DIR }}"
+          $pclRoot = "C:\Program Files\PCL 1.14.1"
+          $vtkDir  = (Get-ChildItem "$pclRoot\3rdParty\VTK\lib\cmake" -Directory | Select-Object -First 1).FullName
+          Write-Host "PCL root : $pclRoot"
+          Write-Host "VTK dir  : $vtkDir"
+          cmake -B build `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DPCL_ROOT="$pclRoot" `
+            -DVTK_DIR="$vtkDir" `
+            "-DCMAKE_PREFIX_PATH=${{ env.Qt5_DIR }};$pclRoot;$pclRoot\3rdParty\VTK;$pclRoot\3rdParty\Eigen;$pclRoot\3rdParty\FLANN;$pclRoot\3rdParty\Boost"
 
-      # ── 6. 编译 ───────────────────────────────────────────────────────────
+      # ── 5. 编译 ───────────────────────────────────────────────────────────
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      # ── 7. windeployqt 打包 Qt 依赖 DLL ──────────────────────────────────
+      # ── 6. windeployqt 打包 Qt 依赖 DLL ──────────────────────────────────
       - name: Deploy Qt DLLs
+        shell: pwsh
         run: |
-          mkdir -p build\package
-          copy build\Release\PointCloudViewer.exe build\package\
+          New-Item -ItemType Directory -Force -Path build\package | Out-Null
+          Copy-Item build\Release\PointCloudViewer.exe build\package\
           windeployqt --release --no-translations build\package\PointCloudViewer.exe
 
-      # ── 8. 复制 vcpkg 运行时 DLL（PCL / VTK / Boost 等）─────────────────
-      - name: Copy vcpkg runtime DLLs
-        run: |
-          $vcpkgBin = "C:\vcpkg\installed\x64-windows\bin"
-          Get-ChildItem "$vcpkgBin\*.dll" | Copy-Item -Destination build\package\ -Force
+      # ── 7. 复制 PCL / VTK / Boost 运行时 DLL ────────────────────────────
+      - name: Copy PCL runtime DLLs
         shell: pwsh
+        run: |
+          $pclRoot = "C:\Program Files\PCL 1.14.1"
+          # PCL 自身 DLL
+          Get-ChildItem "$pclRoot\bin\*.dll" | Copy-Item -Destination build\package\ -Force
+          # VTK DLL
+          $vtkBin = "$pclRoot\3rdParty\VTK\bin"
+          if (Test-Path $vtkBin) {
+            Get-ChildItem "$vtkBin\*.dll" | Copy-Item -Destination build\package\ -Force
+          }
+          # 其余第三方 DLL（Boost、FLANN 等）
+          Get-ChildItem "$pclRoot\3rdParty" -Recurse -Filter "*.dll" |
+            Copy-Item -Destination build\package\ -Force
 
       # ── 9. 上传制品 ───────────────────────────────────────────────────────
       - name: Upload artifact
